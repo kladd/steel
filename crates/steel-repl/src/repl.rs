@@ -60,6 +60,27 @@ fn get_default_startup() -> ColoredString {
     .bold()
 }
 
+#[cfg(not(target_os = "windows"))]
+fn get_default_prompt() -> Prompt<String> {
+    Prompt {
+        default: format!("{}", "λ > ".bright_green().bold().italic()),
+        contextual: |context| {
+            format!(
+                "{}",
+                format!("λ ({context}) > ").bright_green().bold().italic(),
+            )
+        },
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_default_prompt() -> Prompt<String> {
+    Prompt {
+        default: "λ > ".to_string(),
+        continuation: |context| format!("λ ({context}) > "),
+    }
+}
+
 fn get_default_repl_history_path() -> PathBuf {
     if let Some(val) = steel_home() {
         let mut parsed_path = PathBuf::from(&val);
@@ -209,36 +230,63 @@ impl ConditionalEventHandler for CtrlCHandler {
     }
 }
 
-pub struct Repl<S: Display, P: AsRef<Path> + Debug> {
+pub struct Prompt<D: Display> {
+    default: D,
+    contextual: fn(&str) -> D,
+}
+
+impl<D: Display> Prompt<D> {
+    pub fn new(default: D, contextual: fn(&str) -> D) -> Self {
+        Self {
+            default,
+            contextual,
+        }
+    }
+}
+
+pub struct Repl<S: Display, P: AsRef<Path> + Debug, T: Display> {
     vm: Engine,
     startup_text: Option<S>,
     history_path: Option<P>,
+    prompt: Prompt<T>,
 }
 
-impl Repl<String, PathBuf> {
+impl Repl<String, PathBuf, String> {
     pub fn new(vm: Engine) -> Self {
         Repl {
             vm,
             startup_text: None,
             history_path: None,
+            prompt: get_default_prompt(),
         }
     }
 }
 
-impl<S: Display, P: AsRef<Path> + Debug> Repl<S, P> {
-    pub fn with_startup<NS: Display>(self, startup_text: NS) -> Repl<NS, P> {
+impl<S: Display, P: AsRef<Path> + Debug, T: Display> Repl<S, P, T> {
+    pub fn with_startup<NS: Display>(self, startup_text: NS) -> Repl<NS, P, T> {
         Repl {
             vm: self.vm,
             history_path: self.history_path,
             startup_text: Some(startup_text),
+            prompt: self.prompt,
         }
     }
 
-    pub fn with_history_path<NP: AsRef<Path> + Debug>(self, history_path: NP) -> Repl<S, NP> {
+    pub fn with_history_path<NP: AsRef<Path> + Debug>(self, history_path: NP) -> Repl<S, NP, T> {
         Repl {
             vm: self.vm,
             history_path: Some(history_path),
             startup_text: self.startup_text,
+            prompt: self.prompt,
+        }
+    }
+
+    pub fn with_prompt<NT: Display>(self, prompt: Prompt<NT>) -> Repl<S, P, NT> {
+        Repl {
+            vm: self.vm,
+            history_path: self.history_path,
+            startup_text: self.startup_text,
+            prompt,
         }
     }
 
@@ -249,11 +297,7 @@ impl<S: Display, P: AsRef<Path> + Debug> Repl<S, P> {
             println!("{}", get_default_startup());
         }
 
-        #[cfg(target_os = "windows")]
-        let mut prompt = String::from("λ > ");
-
-        #[cfg(not(target_os = "windows"))]
-        let mut prompt = format!("{}", "λ > ".bright_green().bold().italic());
+        let mut prompt = self.prompt.default.to_string();
 
         let mut rl = Editor::<RustylineHelper, rustyline::history::DefaultHistory>::new()
             .expect("Unable to instantiate the repl!");
@@ -352,10 +396,7 @@ impl<S: Display, P: AsRef<Path> + Debug> Repl<S, P> {
                             }
 
                             // Update the prompt to now include the new context
-                            prompt = format!(
-                                "{}",
-                                format!("λ ({line}) > ").bright_green().bold().italic(),
-                            );
+                            prompt = ((self.prompt.contextual)(line)).to_string();
 
                             let mut file = file?;
 
